@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pipe-on-Pipe Template Calculator</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+    label { display: grid; gap: 6px; font-size: 13px; }
+    input, select { font-size: 16px; padding: 8px 10px; width: 200px; }
+    button { font-size: 16px; padding: 10px 14px; cursor: pointer; }
+    .hint { font-size: 13px; opacity: 0.9; margin-top: 10px; line-height: 1.35; }
+    .warn { color: #b00020; font-weight: 700; }
+    #wrap { margin-top: 14px; display: grid; gap: 12px; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; }
+    .card { border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .page { border: 1px dashed rgba(127,127,127,0.5); border-radius: 10px; padding: 10px; background: rgba(127,127,127,0.06); }
+    .page h2 { font-size: 14px; margin: 0 0 8px; }
+    svg { max-width: 100%; height: auto; background: white; }
+    .small { width: 140px; }
+    .checks { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+    .checks label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+    .checks input { width: auto; }
+    @media print {
+      body { margin: 0; }
+      .no-print { display: none !important; }
+      #wrap { margin: 0; }
+      .page { border: none; padding: 0; background: none; }
+      .page h2 { display: none; }
+      .print-break { page-break-after: always; }
+      svg { width: 100%; height: 100%; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="no-print">
+    <h1>Pipe-on-Pipe Template Calculator</h1>
+
+    <div class="row card">
+      <label>
+        Mode
+        <select id="mode">
+          <option value="mainHole" selected>Main pipe hole template (most common)</option>
+          <option value="branchCut">Branch fishmouth template</option>
+        </select>
+      </label>
+
+      <label>
+        Main pipe diameter (mm)
+        <input id="Dmain" type="number" inputmode="decimal" value="315" min="1" step="0.1" />
+      </label>
+
+      <label>
+        Branch pipe diameter (mm)
+        <input id="Dbranch" type="number" inputmode="decimal" value="160" min="1" step="0.1" />
+      </label>
+
+      <label>
+        Angle between pipes (deg)
+        <input id="angle" type="number" inputmode="decimal" value="90" min="1" max="179" step="0.1" />
+      </label>
+
+      <label>
+        Margin (mm)
+        <input id="margin" class="small" type="number" inputmode="decimal" value="10" min="0" step="1" />
+      </label>
+
+      <label>
+        Overlap for tiling (mm)
+        <input id="overlap" class="small" type="number" inputmode="decimal" value="8" min="0" step="1" />
+      </label>
+
+      <label>
+        Quality (points)
+        <input id="points" class="small" type="number" value="720" min="180" step="180" />
+      </label>
+
+      <button id="btn">Calculate</button>
+    </div>
+
+    <div class="checks card">
+      <label><input id="tile" type="checkbox" checked /> Multi-page A3 tiling</label>
+      <label><input id="seam" type="checkbox" checked /> 0° seam line</label>
+      <label><input id="line180" type="checkbox" checked /> 180° line</label>
+      <label><input id="degTicks" type="checkbox" /> Degree ticks (10°)</label>
+      <label><input id="grid" type="checkbox" checked /> Light grid</label>
+    </div>
+
+    <div class="toolbar">
+      <button id="btnPrint">Print</button>
+      <button id="btnDownloadAll">Download all pages (SVG)</button>
+    </div>
+
+    <div id="msg" class="hint"></div>
+  </div>
+
+  <div id="wrap"></div>
+
+<script>
+(() => {
+  const el = (id) => document.getElementById(id);
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+
+  const A3 = {
+    portrait: { w: 297, h: 420, name: "A3 portrait" },
+    landscape:{ w: 420, h: 297, name: "A3 landscape" }
+  };
+
+  // ---------- Geometry ----------
+  // Branch fishmouth (cut on branch pipe): previous derivation
+  function computeBranchFishmouth(Dmain, Dbranch, thetaDeg, nPts) {
+    const R = Dmain / 2;
+    const r = Dbranch / 2;
+    const theta = thetaDeg * Math.PI / 180;
+    const sT = Math.sin(theta);
+    const cT = Math.cos(theta);
+
+    if (sT < 1e-6) return { ok:false, error:"Angle too small — pipes nearly parallel." };
+    if (R <= 0 || r <= 0) return { ok:false, error:"Diameters must be > 0." };
+
+    const pts = [];
+    let sMin = Infinity, sMax = -Infinity;
+
+    for (let i = 0; i <= nPts; i++) {
+      const phi = (i / nPts) * 2 * Math.PI;
+      const sinP = Math.sin(phi);
+      const cosP = Math.cos(phi);
+
+      const inside = R*R - r*r*sinP*sinP;
+      if (inside < 0) { pts.push({ phi, t: NaN }); continue; }
+
+      const root = Math.sqrt(inside);
+      const s = (root - r*cT*cosP) / sT;
+
+      if (Number.isFinite(s)) { sMin = Math.min(sMin, s); sMax = Math.max(sMax, s); }
+      pts.push({ phi, t: s }); // store raw
+    }
+
+    if (!Number.isFinite(sMin) || !Number.isFinite(sMax)) {
+      return { ok:false, error:"No valid intersection (check diameters/angle)." };
+    }
+
+    const shifted = pts.map(p => ({ phi: p.phi, y: Number.isFinite(p.t) ? (p.t - sMin) : NaN }));
+    const height = sMax - sMin;
+    const width = 2 * Math.PI * r;
+
+    return { ok:true, kind:"branch", R, r, width, height, curves:{ single: shifted } };
+  }
+
+  // Main pipe hole template (cutout on main pipe surface)
+  // Main cylinder: x^2 + y^2 = R^2, axis along Z
+  // Branch axis tilted by theta in X-Z plane, intersecting at origin, radius r
+  // Condition distance to branch axis = r gives:
+  // z(ψ) = [ R cosψ cosθ ± sqrt(r^2 - R^2 sin^2ψ) ] / sinθ
+  // For each ψ around main pipe, we get two z values => two boundary curves on main surface.
+  function computeMainHole(Dmain, Dbranch, thetaDeg, nPts) {
+    const R = Dmain / 2;
+    const r = Dbranch / 2;
+    const theta = thetaDeg * Math.PI / 180;
+    const sT = Math.sin(theta);
+    const cT = Math.cos(theta);
+
+    if (sT < 1e-6) return { ok:false, error:"Angle too small — pipes nearly parallel." };
+    if (R <= 0 || r <= 0) return { ok:false, error:"Diameters must be > 0." };
+
+    const upper = [];
+    const lower = [];
+    let zMin = Infinity, zMax = -Infinity;
+    let validCount = 0;
+
+    for (let i = 0; i <= nPts; i++) {
+      const psi = (i / nPts) * 2 * Math.PI; // around main pipe
+      const sinP = Math.sin(psi);
+      const cosP = Math.cos(psi);
+
+      const inside = r*r - R*R*sinP*sinP;
+      if (inside < 0) {
+        upper.push({ psi, z: NaN });
+        lower.push({ psi, z: NaN });
+        continue;
+      }
+
+      const root = Math.sqrt(inside);
+      const zPlus  = (R*cosP*cT + root) / sT;
+      const zMinus = (R*cosP*cT - root) / sT;
+
+      upper.push({ psi, z: zPlus });
+      lower.push({ psi, z: zMinus });
+
+      if (Number.isFinite(zPlus))  { zMin = Math.min(zMin, zPlus);  zMax = Math.max(zMax, zPlus); }
+      if (Number.isFinite(zMinus)) { zMin = Math.min(zMin, zMinus); zMax = Math.max(zMax, zMinus); }
+      validCount++;
+    }
+
+    if (!Number.isFinite(zMin) || !Number.isFinite(zMax) || validCount < nPts * 0.2) {
+      return { ok:false, error:"No valid intersection. Check sizes/angle (e.g., geometry may not intersect for much of the circumference)." };
+    }
+
+    const shiftedUpper = upper.map(p => ({ psi: p.psi, y: Number.isFinite(p.z) ? (p.z - zMin) : NaN }));
+    const shiftedLower = lower.map(p => ({ psi: p.psi, y: Number.isFinite(p.z) ? (p.z - zMin) : NaN }));
+
+    const height = zMax - zMin;
+    const width = 2 * Math.PI * R;
+
+    return { ok:true, kind:"main", R, r, width, height, curves:{ upper: shiftedUpper, lower: shiftedLower } };
+  }
+
+  // ---------- Rendering helpers ----------
+  function chooseA3Orientation(neededW, neededH) {
+    const score = (page) => Math.max(0, neededW - page.w) + Math.max(0, neededH - page.h);
+    const p = A3.portrait, l = A3.landscape;
+    return (score(l) <= score(p)) ? l : p;
+  }
+
+  function makeGridSvgLines(page, enable) {
+    if (!enable) return "";
+    const lines = [];
+    for (let x = 0; x <= page.w; x += 10) {
+      const strong = (x % 50 === 0);
+      lines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${page.h}" stroke="rgba(0,0,0,${strong?0.18:0.07})" stroke-width="${strong?0.4:0.25}"/>`);
+    }
+    for (let y = 0; y <= page.h; y += 10) {
+      const strong = (y % 50 === 0);
+      lines.push(`<line x1="0" y1="${y}" x2="${page.w}" y2="${y}" stroke="rgba(0,0,0,${strong?0.18:0.07})" stroke-width="${strong?0.4:0.25}"/>`);
+    }
+    return lines.join("\n  ");
+  }
+
+  function makeDegreeTicks(originX, originY, width, height, enable) {
+    if (!enable) return "";
+    const ticks = [];
+    for (let deg = 0; deg <= 360; deg += 10) {
+      const x = originX + (deg / 360) * width;
+      const isMajor = (deg % 90 === 0);
+      const len = isMajor ? 6 : 3;
+      ticks.push(`<line x1="${x}" y1="${originY}" x2="${x}" y2="${originY - len}" stroke="rgba(0,0,0,0.7)" stroke-width="${isMajor?0.7:0.5}"/>`);
+      if (isMajor) {
+        ticks.push(`<text x="${x+1}" y="${originY - 8}" font-size="4.5" font-family="Arial" fill="black">${deg}°</text>`);
+      }
+    }
+    return ticks.join("\n  ");
+  }
+
+  function polylineFromCurve(curve, width, originX, originY, totalAngleKey /* "psi" or "phi" */) {
+    const pts = curve.filter(p => Number.isFinite(p.y)).map(p => {
+      const angle = p[totalAngleKey];
+      const x = originX + (angle / (2*Math.PI)) * width;
+      const y = originY + p.y;
+      return `${x.toFixed(3)},${y.toFixed(3)}`;
+    });
+    return pts.join(" ");
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], {type: "image/svg+xml;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---------- Tiling ----------
+  function tileTemplateToPages(templateW, templateH, margin, overlap, headerH) {
+    // Choose page orientation to minimize page count while fitting within printable area.
+    // We'll compute per-orientation capacity (innerW/innerH).
+    const tryOrientation = (page) => {
+      const innerW = page.w - 2*margin;
+      const innerH = page.h - 2*margin - headerH;
+      const stepW = Math.max(10, innerW - overlap); // avoid zero/negative
+      const stepH = Math.max(10, innerH - overlap);
+      const cols = Math.ceil(Math.max(1e-6, templateW) / stepW);
+      const rows = Math.ceil(Math.max(1e-6, templateH) / stepH);
+      return { page, innerW, innerH, stepW, stepH, cols, rows, count: cols*rows };
+    };
+
+    const a = tryOrientation(A3.landscape);
+    const b = tryOrientation(A3.portrait);
+    const chosen = (a.count <= b.count) ? a : b;
+
+    // Build tile rectangles in template coordinates (mm)
+    const tiles = [];
+    for (let r = 0; r < chosen.rows; r++) {
+      for (let c = 0; c < chosen.cols; c++) {
+        const x0 = c * chosen.stepW;
+        const y0 = r * chosen.stepH;
+        const x1 = Math.min(templateW, x0 + chosen.innerW);
+        const y1 = Math.min(templateH, y0 + chosen.innerH);
+        tiles.push({ r, c, x0, y0, x1, y1 });
+      }
+    }
+    return { ...chosen, tiles };
+  }
+
+  function renderPageSvg(opts) {
+    const {
+      page, margin, headerText, gridOn,
+      templateW, templateH,
+      tileRect, // {x0,y0,x1,y1} in template coords OR null for single-page
+      drawFn // function that returns SVG elements for curves and marks in TEMPLATE coords
+    } = opts;
+
+    const headerH = 18;
+    const originX = margin;
+    const originY = margin + headerH;
+
+    // Clip area equals printable inner area (excluding margins + header)
+    const clipW = page.w - 2*margin;
+    const clipH = page.h - 2*margin - headerH;
+
+    const clipId = `clip_${Math.random().toString(36).slice(2)}`;
+
+    // If tiled: we translate template coords by (-tileRect.x0, -tileRect.y0)
+    const tx = tileRect ? -tileRect.x0 : 0;
+    const ty = tileRect ? -tileRect.y0 : 0;
+
+    // Registration marks (corners of clip)
+    const reg = `
+      <g stroke="rgba(0,0,0,0.6)" stroke-width="0.6">
+        <line x1="${originX+2}" y1="${originY+2}" x2="${originX+12}" y2="${originY+2}"/>
+        <line x1="${originX+2}" y1="${originY+2}" x2="${originX+2}" y2="${originY+12}"/>
+
+        <line x1="${originX+clipW-2}" y1="${originY+2}" x2="${originX+clipW-12}" y2="${originY+2}"/>
+        <line x1="${originX+clipW-2}" y1="${originY+2}" x2="${originX+clipW-2}" y2="${originY+12}"/>
+
+        <line x1="${originX+2}" y1="${originY+clipH-2}" x2="${originX+12}" y2="${originY+clipH-2}"/>
+        <line x1="${originX+2}" y1="${originY+clipH-2}" x2="${originX+2}" y2="${originY+clipH-12}"/>
+
+        <line x1="${originX+clipW-2}" y1="${originY+clipH-2}" x2="${originX+clipW-12}" y2="${originY+clipH-2}"/>
+        <line x1="${originX+clipW-2}" y1="${originY+clipH-2}" x2="${originX+clipW-2}" y2="${originY+clipH-12}"/>
+      </g>
+    `;
+
+    const grid = makeGridSvgLines(page, gridOn);
+
+    const svg =
+`<svg xmlns="http://www.w3.org/2000/svg" width="${page.w}mm" height="${page.h}mm" viewBox="0 0 ${page.w} ${page.h}">
+  <rect x="0" y="0" width="${page.w}" height="${page.h}" fill="white"/>
+  ${grid ? "  " + grid : ""}
+
+  <text x="${margin}" y="${margin + 8}" font-size="6" font-family="Arial" fill="black">
+    ${headerText} — print at 100% (no scaling)
+  </text>
+
+  <defs>
+    <clipPath id="${clipId}">
+      <rect x="${originX}" y="${originY}" width="${clipW}" height="${clipH}"/>
+    </clipPath>
+  </defs>
+
+  ${reg}
+
+  <g clip-path="url(#${clipId})" transform="translate(${originX + tx}, ${originY + ty})">
+    ${drawFn()}
+  </g>
+
+  <!-- Inner printable border -->
+  <rect x="${originX}" y="${originY}" width="${clipW}" height="${clipH}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="0.6"/>
+</svg>`;
+
+    return svg;
+  }
+
+  // ---------- Main renderer ----------
+  function render() {
+    const mode = el("mode").value;
+
+    const Dmain = Number(el("Dmain").value);
+    const Dbranch = Number(el("Dbranch").value);
+    const angleDeg = Number(el("angle").value);
+
+    const margin = Number(el("margin").value);
+    const overlap = Number(el("overlap").value);
+    const nPts = clamp(Number(el("points").value) || 720, 180, 8000);
+
+    const doTile = el("tile").checked;
+    const seamOn = el("seam").checked;
+    const line180On = el("line180").checked;
+    const degTicksOn = el("degTicks").checked;
+    const gridOn = el("grid").checked;
+
+    const msg = el("msg");
+    msg.textContent = "";
+
+    const res = (mode === "mainHole")
+      ? computeMainHole(Dmain, Dbranch, angleDeg, nPts)
+      : computeBranchFishmouth(Dmain, Dbranch, angleDeg, nPts);
+
+    if (!res.ok) {
+      msg.innerHTML = `<span class="warn">${res.error}</span>`;
+      el("wrap").innerHTML = "";
+      window.__PAGES__ = [];
+      return;
+    }
+
+    const headerH = 18;
+    const neededW = res.width + 2*margin;
+    const neededH = res.height + 2*margin + headerH;
+
+    const basePage = chooseA3Orientation(neededW, neededH);
+
+    const pages = [];
+    const wrap = el("wrap");
+    wrap.innerHTML = "";
+
+    const headerText = (() => {
+      const kind = (mode === "mainHole") ? "MAIN PIPE HOLE" : "BRANCH FISHMOUTH";
+      return `${kind} | Main Ø${Dmain} mm | Branch Ø${Dbranch} mm | Angle ${angleDeg}°`;
+    })();
+
+    // Draw function in TEMPLATE coords (mm)
+    const drawFn = () => {
+      const elems = [];
+
+      // Template bounding box (for reference)
+      elems.push(`<rect x="0" y="0" width="${res.width}" height="${res.height}" fill="none" stroke="rgba(0,0,0,0.25)" stroke-width="0.6"/>`);
+
+      // Alignment lines
+      if (seamOn) {
+        elems.push(`<line x1="0" y1="0" x2="0" y2="${res.height}" stroke="rgba(0,0,0,0.9)" stroke-width="1.1"/>`);
+        elems.push(`<text x="2" y="10" font-size="6" font-family="Arial" fill="black">0° SEAM / START</text>`);
+      }
+      if (line180On) {
+        const x180 = res.width / 2;
+        elems.push(`<line x1="${x180}" y1="0" x2="${x180}" y2="${res.height}" stroke="rgba(0,0,0,0.7)" stroke-width="0.9"/>`);
+        elems.push(`<text x="${x180+2}" y="10" font-size="6" font-family="Arial" fill="black">180°</text>`);
+      }
+      if (degTicksOn) {
+        elems.push(makeDegreeTicks(0, 0, res.width, res.height, true));
+      }
+
+      // Curves
+      if (res.kind === "branch") {
+        const pl = polylineFromCurve(res.curves.single, res.width, 0, 0, "phi");
+        elems.push(`<polyline points="${pl}" fill="none" stroke="black" stroke-width="1.0"/>`);
+      } else {
+        const up = polylineFromCurve(res.curves.upper, res.width, 0, 0, "psi");
+        const lo = polylineFromCurve(res.curves.lower, res.width, 0, 0, "psi");
+
+        elems.push(`<polyline points="${up}" fill="none" stroke="black" stroke-width="1.0"/>`);
+        elems.push(`<polyline points="${lo}" fill="none" stroke="black" stroke-width="1.0"/>`);
+
+        // Connect ends where both curves are valid (optional visual closure: lightweight)
+        // This helps when only part of circumference is valid; it "shows the hole boundary" more clearly.
+        elems.push(`<text x="0" y="${res.height + 10}" font-size="5.5" font-family="Arial" fill="black">
+          Cut along both curves to form the hole outline (tape tiles if multiple pages).
+        </text>`);
+      }
+
+      return elems.join("\n    ");
+    };
+
+    if (!doTile) {
+      const svg = renderPageSvg({
+        page: basePage,
+        margin,
+        headerText,
+        gridOn,
+        templateW: res.width,
+        templateH: res.height,
+        tileRect: null,
+        drawFn
+      });
+
+      pages.push({ filename: `pipe-template-${mode}-A3.svg`, svg });
+      wrap.innerHTML = `<div class="page"><h2>Single page (${basePage.name})</h2>${svg}</div>`;
+    } else {
+      const tiling = tileTemplateToPages(res.width, res.height, margin, overlap, headerH);
+
+      // Message about tiling
+      msg.innerHTML = `
+        <div class="mono">
+          Template size: ${res.width.toFixed(2)} × ${res.height.toFixed(2)} mm<br/>
+          Page: ${tiling.page.name} | Tiles: ${tiling.cols} × ${tiling.rows} = ${tiling.count}<br/>
+          Overlap: ${overlap} mm
+        </div>
+        <div class="hint">
+          Tip: print at <b>100%</b> (no scaling). Tape using the overlap + corner registration marks.
+        </div>
+      `;
+
+      tiling.tiles.forEach((t, idx) => {
+        const svg = renderPageSvg({
+          page: tiling.page,
+          margin,
+          headerText: `${headerText} | Tile ${idx+1}/${tiling.count} (row ${t.r+1}, col ${t.c+1})`,
+          gridOn,
+          templateW: res.width,
+          templateH: res.height,
+          tileRect: t,
+          drawFn
+        });
+
+        pages.push({ filename: `pipe-template-${mode}-tile-r${t.r+1}-c${t.c+1}.svg`, svg });
+
+        const div = document.createElement("div");
+        div.className = "page print-break";
+        div.innerHTML = `<h2>Tile ${idx+1}/${tiling.count} — row ${t.r+1}, col ${t.c+1} (${tiling.page.name})</h2>${svg}`;
+        wrap.appendChild(div);
+      });
+    }
+
+    // Save pages for download/print
+    window.__PAGES__ = pages;
+
+    if (!msg.innerHTML) {
+      const fits = (neededW <= basePage.w && neededH <= basePage.h);
+      msg.innerHTML = `
+        <div class="mono">
+          Template size: ${res.width.toFixed(2)} × ${res.height.toFixed(2)} mm<br/>
+          Fits on ${basePage.name}: ${fits ? "YES" : "NO"} (enable tiling if NO)
+        </div>
+        <div class="hint">
+          Tip: print at <b>100%</b> (no scaling). The left edge is 0° seam/start.
+        </div>
+      `;
+    }
+  }
+
+  // ---------- Buttons ----------
+  el("btn").addEventListener("click", render);
+
+  el("btnPrint").addEventListener("click", () => {
+    if (!window.__PAGES__ || window.__PAGES__.length === 0) render();
+    window.print();
+  });
+
+  el("btnDownloadAll").addEventListener("click", () => {
+    if (!window.__PAGES__ || window.__PAGES__.length === 0) render();
+    window.__PAGES__.forEach(p => downloadText(p.filename, p.svg));
+  });
+
+  // Initial render
+  render();
+})();
+</script>
+</body>
+</html>
